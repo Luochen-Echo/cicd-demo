@@ -1,0 +1,53 @@
+name: Issue 格式检查
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.issue.title || ''
+            const body = context.payload.issue.body || ''
+            const number = context.issue.number
+            const { owner, repo } = context.repo
+
+            const ALLOWED_PREFIXES = ['[Bug]', '[Feature]', '[Question]']
+            const REQUIRED_SECTIONS = ['复现步骤', '预期结果', '实际结果']
+
+            const hasPrefix = ALLOWED_PREFIXES.some((p) => title.startsWith(p))
+            const missing = REQUIRED_SECTIONS.filter((s) => !body.includes(s))
+
+            const errors = []
+            if (!hasPrefix) {
+              errors.push(`标题需以 ${ALLOWED_PREFIXES.join(' / ')} 开头，当前为：${title}`)
+            }
+            for (const s of missing) {
+              errors.push(`正文缺少章节：${s}`)
+            }
+
+            if (errors.length > 0) {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: number, labels: ['invalid'],
+              })
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number,
+                body: `该 issue 不符合规范，已自动关闭，不会进入人工处理队列。\n\n` +
+                      errors.map((e) => `- ${e}`).join('\n') +
+                      `\n\n请修改标题/正文后重新提交。`,
+              })
+              await github.rest.issues.update({
+                owner, repo, issue_number: number, state: 'closed',
+              })
+            } else {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: number, labels: ['triage-passed'],
+              })
+            }
