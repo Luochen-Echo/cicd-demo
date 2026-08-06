@@ -9,11 +9,6 @@ on:
       - "tests/**"
       - ".github/workflows/ci.yml"
   pull_request:
-    paths:
-      - "pyproject.toml"
-      - "uv.lock"
-      - "src/**"
-      - "tests/**"
   workflow_dispatch:
 
 jobs:
