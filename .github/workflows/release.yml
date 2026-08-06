@@ -24,12 +24,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 计算小写镜像名
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+
       - name: 构建并推送镜像
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          tags: ${{ steps.image.outputs.name }}
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
