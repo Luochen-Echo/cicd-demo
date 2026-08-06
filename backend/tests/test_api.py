@@ -1,14 +1,18 @@
+from contextlib import contextmanager
+
 from fastapi.testclient import TestClient
 
 from app.db import get_connection
 from app.main import app
 
 
+@contextmanager
 def _client() -> TestClient:
-    with get_connection() as conn:
-        conn.execute("TRUNCATE items")
-        conn.commit()
-    return TestClient(app)
+    with TestClient(app) as client:
+        with get_connection() as conn:
+            conn.execute("TRUNCATE items")
+            conn.commit()
+        yield client
 
 
 def test_health_reports_db_ok():
