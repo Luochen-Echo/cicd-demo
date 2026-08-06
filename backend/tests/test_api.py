@@ -32,3 +32,10 @@ def test_create_then_list_items():
         listed = client.get("/api/items")
         assert listed.status_code == 200
         assert listed.json() == [item]
+
+
+def test_empty_list_after_truncate():
+    with _client() as client:
+        res = client.get("/api/items")
+    assert res.status_code == 200
+    assert res.json() == []
