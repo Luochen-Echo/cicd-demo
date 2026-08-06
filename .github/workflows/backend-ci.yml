@@ -1,19 +1,12 @@
-name: CI
+name: Backend CI
 
 on:
   push:
     paths:
-      - "pyproject.toml"
-      - "uv.lock"
-      - "src/**"
-      - "tests/**"
-      - ".github/workflows/ci.yml"
+      - "backend/**"
   pull_request:
     paths:
-      - "pyproject.toml"
-      - "uv.lock"
-      - "src/**"
-      - "tests/**"
+      - "backend/**"
   workflow_dispatch:
 
 jobs:
@@ -28,16 +21,27 @@ jobs:
 
       - name: 安装依赖
         run: uv sync
+        working-directory: backend
 
       - name: 运行 ruff 检查
         run: uv run ruff check .
+        working-directory: backend
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -45,11 +49,10 @@ jobs:
       - name: 安装 uv
         uses: astral-sh/setup-uv@v5
 
-      - name: 安装 Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
       - name: 安装依赖
         run: uv sync
+        working-directory: backend
 
-      - name: 运行测试
+      - name: 运行集成测试（连 Postgres）
         run: uv run pytest
+        working-directory: backend

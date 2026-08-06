@@ -1,0 +1,9 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "description": "全栈 Demo 前端：静态页 + nginx",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
