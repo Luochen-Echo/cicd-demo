@@ -4,9 +4,9 @@
 
 > 本仓库本身就是一个可运行的示例：`math_utils` 是一个最小的 Python 数学工具包，配好了 `uv` + `ruff` + `pytest`，以及位于 `.github/workflows/ci.yml` 的 GitHub Actions 流水线。
 
-[![CI](https://github.com/你的用户名/你的仓库名/actions/workflows/ci.yml/badge.svg)](https://github.com/你的用户名/你的仓库名/actions/workflows/ci.yml)
+[![CI](https://github.com/Luochen-Echo/cicd-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/Luochen-Echo/cicd-demo/actions/workflows/ci.yml)
 
-> ⬆️ 上面的徽章是**状态徽章**，教程第 5 步会教你怎么生成真实地址替换它。
+> ⬆️ 上面的徽章是**状态徽章**，实时显示 CI 通过/失败。
 
 ---
 
@@ -18,6 +18,10 @@
 4. [逐步进阶：lint、矩阵、缓存](#4-逐步进阶lint矩阵缓存)
 5. [状态徽章：把 CI 结果贴到 README](#5-状态徽章把-ci-结果贴到-readme)
 6. [常见操作与排错](#6-常见操作与排错)
+7. [进阶实战：Issue 格式检查](#7-进阶实战issue-格式检查)
+8. [CD 发版：Docker 镜像 + Release](#8-cd-发版docker-镜像--release)
+9. [排错实战复盘](#9-排错实战复盘)
+10. [ci.yml 常用写法速查](#10-ciyml-常用写法速查)
 
 ---
 
@@ -297,3 +301,186 @@ on:
 - 用矩阵跑多个版本、读懂状态徽章、定位失败的 step
 
 **下一步建议**：把 `on.pull_request` 用起来，练习开分支 → 提 PR → 看 Actions 在 PR 上自动跑检查 → 通过后合并。这是日常开发最标准的 CI 工作流。
+
+---
+
+## 7. 进阶实战：Issue 格式检查
+
+除了 `push`，GitHub Actions 还能监听很多事件。下面这个 workflow 会在**有人提交 issue 时**自动校验格式，不合规的直接关闭、不进入人工队列。
+
+### 7.1 触发点换成 `issues`
+
+```yaml
+on:
+  issues:
+    types: [opened, edited]   # 新开 / 编辑 issue 时触发
+```
+
+### 7.2 权限声明（关键）
+
+workflow 用的 `GITHUB_TOKEN` 默认只有**读**权限。要给 issue 打标签、评论、关闭（都是写操作），必须显式声明：
+
+```yaml
+permissions:
+  issues: write
+```
+
+不写这行，后面的 API 调用会报 403 拒绝访问。**每次写操作对应一个权限声明**：建 Release 要 `contents: write`，推镜像要 `packages: write`。
+
+### 7.3 核心：`actions/github-script`
+
+它让你在 workflow 里直接写 JS，并自动准备好两个对象：
+- `github` —— GitHub API 封装，`github.rest.issues.xxx()` 调接口
+- `context` —— 当前事件信息，`context.payload.issue` 就是触发它的那个 issue
+
+```yaml
+steps:
+  - uses: actions/github-script@v7
+    with:
+      script: |
+        const title = context.payload.issue.title || ''
+        const body = context.payload.issue.body || ''
+        const number = context.issue.number
+        const { owner, repo } = context.repo
+
+        const ALLOWED_PREFIXES = ['[Bug]', '[Feature]', '[Question]']
+        const REQUIRED_SECTIONS = ['复现步骤', '预期结果', '实际结果']
+
+        const hasPrefix = ALLOWED_PREFIXES.some((p) => title.startsWith(p))
+        const missing = REQUIRED_SECTIONS.filter((s) => !body.includes(s))
+
+        if (missing.length > 0 || !hasPrefix) {
+          await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: ['invalid'] })
+          await github.rest.issues.createComment({ owner, repo, issue_number: number, body: '不符合规范，已自动关闭。' })
+          await github.rest.issues.update({ owner, repo, issue_number: number, state: 'closed' })
+        } else {
+          await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: ['triage-passed'] })
+        }
+```
+
+本项目完整实现见 `.github/workflows/issue-check.yml` 和 `.github/ISSUE_TEMPLATE/bug_report.yml`。
+
+> 同类玩法：`actions/github-script` 还能关掉没填描述的 PR、自动打标签、评论提醒。这就是"机器人审单"的原理。
+
+---
+
+## 8. CD 发版：Docker 镜像 + Release
+
+### 8.1 CI 和 CD 的区别
+
+**同一个 workflow 骨架，steps 里最后干什么不同**：
+
+| | 触发 | steps 干什么 |
+|---|---|---|
+| CI | push / pull_request | 构建 + lint + 测试，输出"代码没问题" |
+| CD | 打 tag / 合并 main | CI 通过后，把**产物部署/发版** |
+
+GitHub 的 runner 是临时机器，跑完就销毁，**没法长期挂着你的服务**。但 workflow 可以在自己这边构建好产物（Docker 镜像、静态文件），再"推"到真正运行服务的地方（你的服务器、云平台、镜像仓库）。
+
+### 8.2 本项目发版流程
+
+```yaml
+name: Release
+on:
+  push:
+    tags: ["v*"]          # 打 v1.0.0 这样的 tag 时触发
+
+permissions:
+  contents: write         # 建 Release
+  packages: write         # 推 GHCR 镜像
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3      # 登录 GHCR
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 计算小写镜像名
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6  # 构建并推送镜像
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.name }}
+      - uses: softprops/action-gh-release@v2  # 自动生成 Release 页面
+        with:
+          generate_release_notes: true
+```
+
+完整实现见 `.github/workflows/release.yml` 和 `Dockerfile`。
+
+**要点**：
+- `github.ref_name` 在 tag 触发时就是 tag 名（`v1.0.0`），用来给镜像打版本标签。
+- `${GITHUB_REPOSITORY,,}` 是 bash 的转小写语法——**GHCR 只接受小写镜像名**，而仓库名可能是 `Luochen-Echo`。
+- 镜像推上去不等于服务启动了。真正"启动服务"要再串一个 job（`needs: [test]`），SSH 到服务器 `docker pull + docker run`。
+
+---
+
+## 9. 排错实战复盘
+
+发版流程跑了 4 次才成功，这 3 个报错正是最有价值的学习素材：
+
+| 报错 | 根因 | 修复 |
+|---|---|---|
+| `repository name must be lowercase` | GHCR 只允许小写镜像名，仓库名 `Luochen-Echo` 含大写 | `${GITHUB_REPOSITORY,,}` 转小写 |
+| `ghcr.io/astral-sh/uv:python3.13: not found` | 该镜像标签不存在（uv 镜像最高到 3.12） | 换 `python3.12-bookworm-slim` |
+| `failed to open /app/README.md` | `pyproject.toml` 声明 `readme = "README.md"`，Dockerfile 没拷贝 | `COPY` 补上 README.md |
+
+**排查套路（在 CI 里和在本地完全一样）**：
+1. `gh run list` 找到失败的 run → `gh run view <id> --log-failed` 看红叉 step 的日志
+2. 读错误消息，定位根因（往往是环境/路径/权限问题，不是代码问题）
+3. 修复 → push（或重打 tag）→ 重新触发
+
+---
+
+## 10. ci.yml 常用写法速查
+
+```yaml
+name: CI
+on:
+  push:
+    branches: [main]          # 只监听 main 分支
+    paths: ["src/**"]         # 只当这些文件变化才触发
+    tags: ["v*"]              # 打 tag 时触发
+  pull_request:               # 开/更新 PR 时触发
+  workflow_dispatch:          # 手动触发（Actions 页面点按钮）
+  schedule:                   # 定时触发（cron 5 段式）
+    - cron: "0 2 * * *"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest    # 机器规格
+    timeout-minutes: 10       # 超时保护
+    continue-on-error: false  # 这个 job 失败时 run 是否继续
+    env:                      # job 级环境变量
+      PYTHONUNBUFFERED: "1"
+    strategy:                 # 矩阵：一个 job 多配置跑
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:                 # 给 action 传参数
+          fetch-depth: 0
+        env:                  # step 级环境变量
+          TOKEN: ${{ secrets.TOKEN }}   # 敏感信息永远走 secrets
+      - name: 条件执行
+        if: ${{ matrix.python-version == '3.13' }}
+        run: echo "只在 3.13 跑"
+      - name: 合并多命令
+        run: |
+          uv sync
+          uv run pytest
+```
+
+**易混点**：
+- 每个 step 都是**全新的 shell**，上一步的 `cd` / `export` 不保留；需要连贯就合并成一个 step（用 `|`）。
+- `uses:` 是别人封装好的脚本包（可能做很多事），`run:` 才是你敲的命令。
+- job 之间**并行且互不相通**；要传数据用 `actions/upload-artifact` / `download-artifact`。
+- 版本号固定大版本（`@v4`），别用 `main`，避免上游改动破坏你的 CI。
